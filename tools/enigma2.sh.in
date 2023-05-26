@@ -1,0 +1,202 @@
+#!/bin/sh
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+datarootdir=@datarootdir@
+
+if [ -d /home/root ]; then
+	export HOME=/home/root
+	cd
+fi
+
+# LC_ALL available?
+if [ -z $LC_ALL ]; then
+	export LC_ALL=en_GB.utf8
+fi
+
+LIBS=@libdir@/libopen.so.0.0.0
+
+PLATFORMCHECK=`sed -En 's|^platform=(.+)$|\1|p' /usr/lib/enigma.info`
+
+if [ "${PLATFORMCHECK}" == "meson64" ]; then
+	echo "1" > /sys/class/graphics/fb0/osd_clear
+	echo "1" > /sys/class/graphics/fb1/osd_clear
+	FIRSTRUN=`sed -En 's|^config\.misc\.firstrun=(.+)$|\1|p' /etc/enigma2/settings | tr [A-Z] [a-z]`
+	if [ "$FIRSTRUN" == "true" ]; then
+		echo "1080p50hz" > /sys/class/display/mode
+	fi
+fi
+
+if [ -f /proc/stb/fp/led_color ]; then
+	echo "00ffffff" > /proc/stb/fp/led_color
+elif [ -f /proc/stb/fp/led_brightness ]; then
+	echo "000000ff" > /proc/stb/fp/led_brightness
+fi
+
+if [ -f /proc/stb/fp/nec_ir ]; then
+	/sbin/insmod /lib/modules/4.9/extra/lcd/lcd.ko
+	echo "1" > /proc/stb/fp/nec_ir
+	[ -f /sys/class/remote/amremote/protocol ] && echo "2" > /sys/class/remote/amremote/protocol
+fi
+
+# enigma main loop
+while : ; do
+	# show bootlogo on enigma2 start
+	SKIN=`sed -En 's|^config\.skin\.primary_skin=(.+)/skin\.xml$|\1|p' "/etc/enigma2/settings"`
+	if [ -z "${SKIN}" ]; then
+		SKIN=`strings -n 10 "/usr/lib/enigma2/python/skin.pyc" | egrep -o -m 1 ".+/skin.xml" | sed 's|/skin.xml.*||'`
+	fi
+	if [ -n "${SKIN}" ]; then
+		SEARCHDIRS="/etc/enigma2/$skin /etc/enigma2/skin_common /etc/enigma2 /usr/share/enigma2/$skin /usr/share/enigma2/skin_default /usr/share/enigma2 /usr/share"
+	else
+		SEARCHDIRS="/etc/enigma2/skin_common /etc/enigma2 /usr/share/enigma2/skin_default /usr/share/enigma2 /usr/share"
+	fi
+	if [ -x "/usr/bin/exteplayer3" -o -x "/usr/bin/showiframe" ]; then
+		for DIR in $SEARCHDIRS
+		do
+			if [ -d ${DIR} ] && [ -f ${DIR}/backdrop.mp4 ]; then
+				"/usr/bin/exteplayer3" "${DIR}/bootlogo.mp4"
+				break
+			elif [ -d ${DIR} ] && [ -f ${DIR}/backdrop.mvi ]; then
+				"/usr/bin/showiframe" "${DIR}/backdrop.mvi"
+				break
+			fi
+		done
+	fi
+
+	# hook to execute scripts always before enigma2 start
+	if [ -x @bindir@/enigma2_pre_start.sh ]; then
+		@bindir@/enigma2_pre_start.sh
+	fi
+
+	# start enigma
+	sync
+	if [ "$(grep config.crash.enabledebug /etc/enigma2/settings)" == "config.crash.enabledebug=true" ]; then
+		RANDOMIZE1970=''
+		time=`date +%Y` ;
+		if [ "$time" = 1970 ]; then
+			RANDOMIZE1970="$(strings /dev/urandom | grep -o '[[:alnum:]]' | head -n 5 | tr -d '\n')"
+		fi
+		LOGFOLDER="/home/root/logs/"
+		if [ ! -d $LOGFOLDER ] ; then mkdir -p $LOGFOLDER; fi
+		if [ "$(grep config.crash.debugPath= /etc/enigma2/settings | sed 's/config.crash.debugPath=//g')" != "" -a -d "$(grep config.crash.debugPath= /etc/enigma2/settings | sed 's/config.crash.debugPath=//g')" ]; then
+			LOGFOLDER=$(grep config.crash.debugPath= /etc/enigma2/settings | sed 's/config.crash.debugPath=//g')
+		fi
+		LD_PRELOAD=$LIBS @bindir@/enigma2 --debug-no-color $VERBOSE &> ${LOGFOLDER}Enigma2-debug-$(date +%Y%m%d_%H-%M-%S)${RANDOMIZE1970}.log
+	else
+		LD_PRELOAD=$LIBS @bindir@/enigma2 $VERBOSE
+	fi
+
+
+	# enigma2 exit codes:
+	#
+	#  1 - halt
+	#  2 - reboot
+	#  3 - restart enigma in normal mode
+	#  4 - front processor upgrade
+	#  5 - install new settings
+	#  6 - restart enigma in debug mode
+	#  7 - manufacturer reset
+	# 16 - recovery mode
+	# 42 - restart for unattended update
+	# 43 - restart for network restore
+	# 44 - restart for autobackup restore
+	#
+	# >128 signal
+
+	ret=$?
+	case $ret in
+		1)
+			if [ -f /proc/stb/fp/led_color ]; then
+				echo "00ffffff" > /proc/stb/fp/led_color
+			elif [ -f /proc/stb/fp/led_brightness ]; then
+				echo "00000008" > /proc/stb/fp/led_brightness
+			fi
+			/sbin/halt
+			;;
+		2)
+			/sbin/reboot
+			;;
+		3)
+			ENIGMA_DEBUG_LVL=3
+			;;
+		4)
+			/sbin/rmmod lcd
+			/usr/sbin/fpupgrade --upgrade 2>&1 | tee /home/root/fpupgrade.log
+			sleep 1;
+			/sbin/rmmod fp
+			/sbin/modprobe fp
+			/sbin/reboot
+			;;
+		5)
+			if ! grep -q config.misc.RestartUI /etc/enigma2/settings; then
+				echo "config.misc.RestartUI=true" >>/etc/enigma2/settings
+			fi
+			;;
+		6)
+			ENIGMA_DEBUG_LVL="4"
+			;;
+		7)
+			rm -R /etc/enigma2
+			;;
+		16)
+			stbcheck=`cat /proc/stb/info/model`
+			if [[ $stbcheck == "one" || $stbcheck == "two" ]]; then
+				/usr/sbin/to-the-rescue
+			fi
+			if [ -e /dev/block/by-name/flag ]; then
+				echo -n "0" > /dev/block/by-name/flag
+			elif [ -e /dev/block/by-name/bootoptions ]; then
+				mkdir -p /tmp/bootoptions
+				mount /dev/block/by-name/bootoptions /tmp/bootoptions
+				cp -f /tmp/bootoptions/STARTUP_RECOVERY /tmp/bootoptions/STARTUP_ONCE
+			else
+				echo "rescue" > /proc/stb/fp/boot_mode
+			fi
+			[[ -e /etc/enigma2/.deep ]] && rm /etc/enigma2/.deep
+			/sbin/reboot
+			;;
+		42)
+			df -P | grep -v "tmpfs " | awk '{print $6}' | tail -n +3 > /tmp/upgrade_mountpoints.txt
+			while read line; do
+				if [  -f $line/var/lib/opkg/status ]; then
+				DESTS=$DESTS" --add-dest "$line":"$line
+			fi
+			done < /tmp/upgrade_mountpoints.txt
+			# bind the console (when available)
+			[ -f /sys/class/vtconsole/vtcon1/bind ] && echo 1 > /sys/class/vtconsole/vtcon1/bind
+			prevupd=0
+			currupd=999
+			opkg update 2>&1 | tee /home/root/opkgupgrade.log
+			# check if we need to upgrade busybox first
+			if [ "$(opkg list-upgradable busybox)" != "" ]; then
+				opkg update busybox 2>&1 | tee -a /home/root/opkgupgrade.log
+			fi
+			# update all other packages
+			while [ $currupd -gt 0 -a $currupd -ne $prevupd ]; do
+				opkg upgrade $DESTS 2>&1 | tee -a /home/root/opkgupgrade.log
+				prevupd=$currupd
+				currupd=`opkg list-upgradable | wc -l`
+				echo "===> $currupd PACKAGE(S) REMAINING" >> /home/root/opkgupgrade.log
+			done
+			/sbin/reboot
+			;;
+		43)
+			# restore only network from autobackup
+			[ -f /sys/class/vtconsole/vtcon1/bind ] && echo 1 > /sys/class/vtconsole/vtcon1/bind
+			/etc/init.d/settings-restore.sh network
+			break
+			;;
+		44)
+			# restore autobackup
+			[ -f /sys/class/vtconsole/vtcon1/bind ] && echo 1 > /sys/class/vtconsole/vtcon1/bind
+			/etc/init.d/settings-restore.sh
+			[ -f /etc/init.d/softcam ] && /etc/init.d/softcam restart
+			break
+			;;
+		*)
+			break
+			;;
+	esac
+
+done
