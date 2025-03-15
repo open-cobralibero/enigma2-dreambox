@@ -15,7 +15,7 @@ from Tools.LoadPixmap import LoadPixmap
 
 MODULE_NAME = __name__.split(".")[-1].capitalize()
 
-DEFAULT_SKIN = BoxInfo.getItem("HasFullHDSkinSupport") and "PLi-FullNightHD/skin.xml" or "PLi-HD/skin.xml"  # SD hardware is no longer supported by the default skin.
+DEFAULT_SKIN = BoxInfo.getItem("HasFullHDSkinSupport") and "Aglare-FHD-CBL/skin.xml" or "PLi-HD/skin.xml"  # SD hardware is no longer supported by the default skin.
 EMERGENCY_SKIN = "skin_default/skin.xml"
 EMERGENCY_NAME = "Default"
 DEFAULT_DISPLAY_SKIN = "skin_default/skin_display.xml"
